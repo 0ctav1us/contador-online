@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contador Compartilhado</title>
+    <!-- Carrega o Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Remove as setas do input de número no Chrome, Safari, Edge, Opera */
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        /* Remove as setas do input de número no Firefox */
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <div id="app" class="flex items-center justify-center min-h-screen p-4">
+        
+        <!-- Estado de Carregamento -->
+        <div id="loading" class="text-center">
+            <p class="text-lg text-gray-600">Conectando ao contador...</p>
+        </div>
+
+        <!-- Conteúdo Principal do Contador (inicialmente oculto) -->
+        <div id="counter-app" class="hidden w-full max-w-sm">
+            <div class="bg-white shadow-xl rounded-2xl p-6 sm:p-8 text-center">
+                
+                <h1 class="text-2xl font-bold text-gray-800 mb-6">Contador Compartilhado</h1>
+                
+                <!-- O valor do contador é um input para permitir edição -->
+                <input 
+                    type="number" 
+                    id="counter-display"
+                    min="0"
+                    max="999"
+                    class="w-full text-center text-7xl sm:text-8xl font-bold text-blue-600 bg-gray-50 rounded-lg p-4 border-2 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    aria-label="Valor do contador"
+                >
+
+                <!-- Botões de Ação -->
+                <div class="grid grid-cols-2 gap-4 mt-8">
+                    <button 
+                        id="decrement-btn"
+                        class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-4 rounded-lg text-2xl transition-all duration-200 transform active:scale-95"
+                    >
+                        -
+                    </button>
+                    <button 
+                        id="increment-btn"
+                        class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-4 rounded-lg text-2xl transition-all duration-200 transform active:scale-95"
+                    >
+                        +
+                    </button>
+                </div>
+                
+                <!-- Botão de Zerar -->
+                <button 
+                    id="reset-btn"
+                    class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg text-lg mt-4 transition-all duration-200 transform active:scale-95"
+                >
+                    Zerar
+                </button>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts do Firebase -->
+    <script type="module">
+        // Importa as funções necessárias do SDK do Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            onSnapshot, 
+            runTransaction, 
+            setDoc,
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- 1. Configuração e Inicialização do Firebase ---
+        
+        // Habilita logs detalhados do Firestore no console (útil para depuração)
+        setLogLevel('Debug');
+
+        // Pega as variáveis globais de configuração do ambiente
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, auth, db, userId, docRef;
+
+        // Seletores do DOM (Restaurados)
+        const loadingEl = document.getElementById('loading');
+        const counterAppEl = document.getElementById('counter-app');
+        const counterInput = document.getElementById('counter-display');
+        const incrementBtn = document.getElementById('increment-btn');
+        const decrementBtn = document.getElementById('decrement-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        
+        try {
+            // Inicializa os serviços do Firebase
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            
+            // Inicia a lógica principal do app APÓS a inicialização bem-sucedida
+            runApp();
+
+        } catch (e) {
+            console.error("Erro ao inicializar o Firebase:", e);
+            loadingEl.textContent = "Erro ao conectar. Verifique o console.";
+            // O 'return' ilegal foi removido daqui
+        }
+
+        // Função principal que encapsula a lógica do app
+        function runApp() {
+            // --- 2. Autenticação do Usuário ---
+
+            // Escuta mudanças no estado de autenticação
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    // Usuário está logado
+                    userId = user.uid;
+                    console.log("Usuário autenticado:", userId);
+                    // Agora que temos um user, podemos inicializar o contador
+                    await initializeCounter();
+                } else {
+                    // Usuário não está logado, tenta fazer login
+                    console.log("Nenhum usuário logado, tentando autenticação...");
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                        // O 'onAuthStateChanged' será disparado novamente após o login
+                    } catch (e) {
+                        console.error("Erro na autenticação:", e);
+                        loadingEl.textContent = "Erro de autenticação.";
+                    }
+                }
+            });
+
+            // --- 3. Lógica Principal do Contador ---
+
+            async function initializeCounter() {
+                // Define o caminho para o documento *único* e *público* do contador
+                // Todos os usuários lerão e escreverão neste mesmo documento
+                const collectionPath = `artifacts/${appId}/public/data/publicCounter`;
+                const documentId = "sharedValue"; // ID estático para o documento
+                
+                docRef = doc(db, collectionPath, documentId);
+
+                // Adiciona o listener de eventos (listeners dos botões)
+                addEventListeners();
+
+                // Escuta mudanças no documento em tempo real
+                const unsubscribe = onSnapshot(docRef, (snapshot) => {
+                    if (snapshot.exists()) {
+                        // Documento existe, atualiza a tela
+                        const data = snapshot.data();
+                        const value = data.value;
+                        
+                        // Garante que o valor no input esteja correto
+                        if (document.activeElement !== counterInput) {
+                             counterInput.value = value;
+                        }
+                        
+                        console.log("Valor atualizado:", value);
+                        // Mostra o app e esconde o loading
+                        loadingEl.style.display = 'none';
+                        counterAppEl.style.display = 'block';
+
+                    } else {
+                        // Documento não existe (primeira vez que alguém abre)
+                        console.log("Documento não encontrado, criando...");
+                        createCounterDocument();
+                    }
+                }, (error) => {
+                    console.error("Erro ao escutar o documento:", error);
+                    loadingEl.textContent = "Erro ao carregar o contador.";
+                });
+            }
+
+            // Função para criar o documento inicial se ele não existir
+            async function createCounterDocument() {
+                try {
+                    // Define o valor inicial como 0
+                    await setDoc(docRef, { value: 0 });
+                    console.log("Documento do contador criado com valor 0.");
+                } catch (e) {
+                    console.error("Erro ao criar documento:", e);
+                }
+            }
+
+            // Função para adicionar os listeners de clique e input
+            function addEventListeners() {
+                incrementBtn.onclick = () => updateCounter(1);
+                decrementBtn.onclick = () => updateCounter(-1);
+                resetBtn.onclick = () => updateCounter(0, true); // 'true' indica que é um reset
+
+                // Listener para quando o usuário digita no campo
+                counterInput.onchange = (e) => {
+                    let newValue = parseInt(e.target.value, 10);
+                    
+                    // Validação
+                    if (isNaN(newValue)) {
+                        newValue = 0; // Volta para 0 se digitar algo inválido
+                    }
+                    
+                    // Aplica os limites 0-999
+                    newValue = validateValue(newValue);
+                    
+                    // Atualiza o display caso o valor tenha sido corrigido
+                    e.target.value = newValue; 
+                    
+                    // Envia o valor digitado como um "reset"
+                    updateCounter(newValue, true);
+                };
+            }
+            
+            // Função que garante que o valor esteja entre 0 e 999
+            function validateValue(value) {
+                if (value > 999) return 999;
+                if (value < 0) return 0;
+                return value;
+            }
+
+            /**
+             * Atualiza o contador usando uma transação para evitar "race conditions".
+             * (Quando dois usuários clicam ao mesmo tempo)
+             * @param {number} change - O valor a ser somado/subtraído, ou o novo valor se isReset for true.
+             * @param {boolean} isReset - Se true, 'change' é o novo valor. Se false, 'change' é o incremento.
+             */
+            async function updateCounter(change, isReset = false) {
+                try {
+                    await runTransaction(db, async (transaction) => {
+                        const counterDoc = await transaction.get(docRef);
+
+                        if (!counterDoc.exists()) {
+                            // Se o documento foi deletado, recria ele
+                            transaction.set(docRef, { value: 0 });
+                            return;
+                        }
+
+                        const currentValue = counterDoc.data().value;
+                        let newValue;
+
+                        if (isReset) {
+                            newValue = change; // 'change' é o valor absoluto (ex: 0 para resetar, ou 50 do input)
+                        } else {
+                            newValue = currentValue + change; // 'change' é o incremento (+1 ou -1)
+                        }
+                        
+                        // Valida o novo valor (0-999)
+                        newValue = validateValue(newValue);
+
+                        // Atualiza o documento dentro da transação
+                        transaction.update(docRef, { value: newValue });
+                    });
+                } catch (e) {
+                    console.error("Falha na transação:", e);
+                }
+            }
+        } // Fim da função runApp()
+
+    </script>
+
+</body>
+</html>
+
